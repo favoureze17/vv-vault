@@ -13,6 +13,7 @@
 (define-constant ERR_TOO_EARLY (err u107))
 (define-constant ERR_INVALID_INTERVAL (err u108))
 (define-constant ERR_INVALID_AMOUNT (err u109))
+(define-constant ERR_TOO_MANY_STAKEHOLDERS (err u110))
 
 ;; Core data structures for stakeholder management
 (define-map stakeholder-shares principal uint)     ;; Maps stakeholder to their percentage share
@@ -36,7 +37,7 @@
     ;; Validate percentage is within bounds
     (asserts! (<= share-percentage u100) ERR_INVALID_PERCENTAGE)
     ;; Ensure vault is active
-    (asserts! (var-get vault-status) (err u110))
+    (asserts! (var-get vault-status) (err u111))
     
     ;; Add new stakeholder if they don't exist
     (if (is-none (map-get? stakeholder-shares stakeholder))
@@ -84,33 +85,84 @@
           ;; Stakeholder not found in registry
           (err ERR_STAKEHOLDER_NOT_FOUND))))))
 
-;; Mass distribution to all stakeholders in a single transaction
-;; Optimized for gas efficiency with fold operations
+;; Mass distribution to all stakeholders using manual unrolling
+;; This approach avoids interdependent functions by handling common cases directly
 (define-public (execute-mass-payout (total-distribution uint))
   (let ((stakeholder-count (var-get total-stakeholders)))
     ;; Verify stakeholders exist
     (if (is-eq stakeholder-count u0)
       (err ERR_NO_STAKEHOLDERS)
-      ;; Create index list for fold operation
-      (let ((index-range (generate-index-list u0 (- stakeholder-count u1))))
-        (let ((payout-result (fold process-stakeholder-payout 
-                                  index-range 
-                                  (tuple (amount total-distribution) (total-paid u0) (success true)))))
-          ;; Record successful distribution
-          (if (get success payout-result)
-            (begin
-              (map-set vault-distributions block-height (get total-paid payout-result))
-              (ok (get total-paid payout-result)))
-            (err ERR_DISTRIBUTION_FAILED)))))))
+      ;; Handle different stakeholder counts manually to avoid interdependency
+      (if (is-eq stakeholder-count u1)
+        (execute-single-stakeholder-payout total-distribution)
+        (if (is-eq stakeholder-count u2)
+          (execute-two-stakeholder-payout total-distribution)
+          (if (is-eq stakeholder-count u3)
+            (execute-three-stakeholder-payout total-distribution)
+            ;; For more than 3 stakeholders, use a simplified approach
+            (execute-multiple-stakeholder-payout total-distribution stakeholder-count)))))))
 
-;; Helper function for mass payout fold operation
-(define-private (process-stakeholder-payout (index uint) (state (tuple (amount uint) (total-paid uint) (success bool))))
-  (if (get success state)
-    ;; Execute payout for current stakeholder
-    (match (execute-payout index (get amount state))
-      distributed-amount (merge state { total-paid: (+ (get total-paid state) distributed-amount) })
-      error (merge state { success: false }))
-    state))
+;; Handle single stakeholder payout
+(define-private (execute-single-stakeholder-payout (amount uint))
+  (match (execute-payout u0 amount)
+    distributed-amount (begin
+      (map-set vault-distributions block-height distributed-amount)
+      (ok distributed-amount))
+    error (err ERR_DISTRIBUTION_FAILED)))
+
+;; Handle two stakeholder payout
+(define-private (execute-two-stakeholder-payout (amount uint))
+  (match (execute-payout u0 amount)
+    first-payment
+      (match (execute-payout u1 amount)
+        second-payment (begin
+          (map-set vault-distributions block-height (+ first-payment second-payment))
+          (ok (+ first-payment second-payment)))
+        error (err ERR_DISTRIBUTION_FAILED))
+    error (err ERR_DISTRIBUTION_FAILED)))
+
+;; Handle three stakeholder payout
+(define-private (execute-three-stakeholder-payout (amount uint))
+  (match (execute-payout u0 amount)
+    first-payment
+      (match (execute-payout u1 amount)
+        second-payment
+          (match (execute-payout u2 amount)
+            third-payment (begin
+              (map-set vault-distributions block-height (+ (+ first-payment second-payment) third-payment))
+              (ok (+ (+ first-payment second-payment) third-payment)))
+            error (err ERR_DISTRIBUTION_FAILED))
+        error (err ERR_DISTRIBUTION_FAILED))
+    error (err ERR_DISTRIBUTION_FAILED)))
+
+;; Handle multiple stakeholders (4 or more) with basic sequential processing
+(define-private (execute-multiple-stakeholder-payout (amount uint) (count uint))
+  (let ((total-paid u0))
+    ;; For simplicity, this version processes up to 10 stakeholders
+    ;; In production, you might want to implement pagination for larger numbers
+    (if (<= count u10)
+      (execute-up-to-ten-stakeholders amount)
+      (err ERR_TOO_MANY_STAKEHOLDERS))))
+
+;; Process up to 10 stakeholders manually
+(define-private (execute-up-to-ten-stakeholders (amount uint))
+  (let ((count (var-get total-stakeholders))
+        (payment-0 (if (> count u0) (unwrap-panic (execute-payout u0 amount)) u0))
+        (payment-1 (if (> count u1) (unwrap-panic (execute-payout u1 amount)) u0))
+        (payment-2 (if (> count u2) (unwrap-panic (execute-payout u2 amount)) u0))
+        (payment-3 (if (> count u3) (unwrap-panic (execute-payout u3 amount)) u0))
+        (payment-4 (if (> count u4) (unwrap-panic (execute-payout u4 amount)) u0))
+        (payment-5 (if (> count u5) (unwrap-panic (execute-payout u5 amount)) u0))
+        (payment-6 (if (> count u6) (unwrap-panic (execute-payout u6 amount)) u0))
+        (payment-7 (if (> count u7) (unwrap-panic (execute-payout u7 amount)) u0))
+        (payment-8 (if (> count u8) (unwrap-panic (execute-payout u8 amount)) u0))
+        (payment-9 (if (> count u9) (unwrap-panic (execute-payout u9 amount)) u0))
+        (total-distributed (+ (+ (+ (+ payment-0 payment-1) (+ payment-2 payment-3)) 
+                                (+ (+ payment-4 payment-5) (+ payment-6 payment-7))) 
+                              (+ payment-8 payment-9))))
+    (begin
+      (map-set vault-distributions block-height total-distributed)
+      (ok total-distributed))))
 
 ;; Automated recurring distribution system
 ;; Enforces time-based distribution intervals
@@ -148,12 +200,6 @@
     (let ((current-status (var-get vault-status)))
       (var-set vault-status (not current-status))
       (ok (not current-status)))))
-
-;; Utility function to generate sequential index list
-(define-private (generate-index-list (start uint) (end uint))
-  (if (<= start end)
-    (cons start (generate-index-list (+ start u1) end))
-    (list)))
 
 ;; === READ-ONLY QUERY FUNCTIONS ===
 
